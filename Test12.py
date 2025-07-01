@@ -4,9 +4,9 @@ from utils.gui import DualMapVisualizer
 from breezyslam.algorithms import RMHC_SLAM
 from breezyslam.sensors import Laser
 from planning.dwa import dwa_control, Config
+from planning.bug2 import Bug2Planner
 from planning.a_star import AStarPlanner
 from simulation.slam_simulator import SLAMSimulator
-from planning.a_star_dwa import AStarDWAPlanner
 
 def is_exit(robot_grid, start_grid, maze_grid):
     rows, cols = maze_grid.shape
@@ -15,12 +15,17 @@ def is_exit(robot_grid, start_grid, maze_grid):
     is_free = (maze_grid[robot_grid] == 0)
     return is_on_boundary and is_free and not_start
 
-def motion(x, u, dt):
+def motion(x, u, dt, map_size_meters, grid_resolution):
+    # x: [x_m, y_m, theta_rad, v, omega]
     x[2] += u[1] * dt
     x[0] += u[0] * np.cos(x[2]) * dt
     x[1] += u[0] * np.sin(x[2]) * dt
     x[3] = u[0]
     x[4] = u[1]
+
+    # 边界限制：强制机器人在迷宫内（0 ~ map_size_meters）
+    x[0] = np.clip(x[0], 0, map_size_meters - grid_resolution)
+    x[1] = np.clip(x[1], 0, map_size_meters - grid_resolution)
     return x
 
 # 1. 读取json迷宫
@@ -127,41 +132,69 @@ def find_exit(maze_grid, start_grid):
 exit_grid = find_exit(maze_grid, start_grid)
 if exit_grid is None:
     raise RuntimeError("No valid exit found on maze boundary!")
-# Map exit grid to meters for DWA goal
-exit_goal = [exit_grid[0] * MAP_SIZE_METERS / maze_grid.shape[0], exit_grid[1] * MAP_SIZE_METERS / maze_grid.shape[1]]
+
+# 初始化 Bug2Planner
+start_xy = (start_grid[0] * MAP_SIZE_METERS / maze_grid.shape[0], start_grid[1] * MAP_SIZE_METERS / maze_grid.shape[1])
+exit_xy = (exit_grid[0] * MAP_SIZE_METERS / maze_grid.shape[0], exit_grid[1] * MAP_SIZE_METERS / maze_grid.shape[1])
+planner = Bug2Planner(maze_grid, start_xy, exit_xy, grid_resolution=MAP_SIZE_METERS / maze_grid.shape[0])
+robot_xy = np.array(start_xy, dtype=float)
+
+# 检查起点是否在障碍物上，若是则自动寻找最近可通行点
+if not planner.is_free(robot_xy):
+    print(f"⚠️ 起点 {robot_xy} 在障碍物上，自动寻找最近可通行点...")
+    found = False
+    for radius in range(1, 10):
+        for dx in np.linspace(-radius, radius, 2*radius+1):
+            for dy in np.linspace(-radius, radius, 2*radius+1):
+                candidate = np.array([robot_xy[0] + dx * planner.grid_resolution,
+                                      robot_xy[1] + dy * planner.grid_resolution])
+                if planner.is_free(candidate):
+                    robot_xy = candidate
+                    print(f"✅ 新起点: {robot_xy}")
+                    found = True
+                    break
+            if found:
+                break
+        if found:
+            break
+    if not found:
+        raise RuntimeError("无法找到可通行的起点，请检查迷宫数据！")
 
 # Initial display (no obstacles argument, pass None for laser_scan for now)
 visualizer.display(x_m=pose[0], y_m=pose[1], theta_deg=np.rad2deg(pose[2]), mapbytes=mapbytes, laser_range=LASER_DETECTION_MAX_MM/1000, laser_scan=None)
-
-# 初始化A*-DWA集成规划器
-astar_dwa_planner = AStarDWAPlanner(maze_grid, config=config, replan_interval=20)
-
 for step in range(max_steps):
-    # 使用A*-DWA集成算法规划
-    u, trajectory, waypoint = astar_dwa_planner.step(
-        pose, exit_grid, obstacles, MAP_SIZE_METERS, maze_grid.shape)
-    pose = motion(pose, u, config.dt)
-    # Simulate laser scan based on maze obstacles and robot pose
+    # 用 Bug2 算法决定下一个物理坐标
+    next_xy = planner.next_move(robot_xy)
+    if np.allclose(next_xy, robot_xy, atol=0.05):
+        print("Robot is stuck or goal reached.")
+        break
+
+    pose[0], pose[1] = next_xy[0], next_xy[1]
+    robot_xy = np.array(next_xy, dtype=float)
+
+    # SLAM、激光、可视化
     laser_scan = slam_sim.simulate_laser_scan([pose[0], pose[1], pose[2]])
-    pose_change = (u[0] * config.dt * 1000, np.rad2deg(u[1] * config.dt), config.dt)
+    pose_change = (0, 0, 1)  # 这里速度和角速度为0，dt=1
     slam_sim.update(laser_scan, pose_change)
     mapbytes = slam_sim.get_map()
-    # Visualize robot, SLAM map, and laser scan
     laser_scan_m = [d/1000.0 for d in laser_scan]
     visualizer.display(x_m=pose[0], y_m=pose[1], theta_deg=np.rad2deg(pose[2]), mapbytes=mapbytes, laser_range=LASER_DETECTION_MAX_MM/1000, laser_scan=laser_scan_m)
-    # Convert robot pose to grid for exit check
-    robot_grid = (int(round(pose[0] * maze_grid.shape[0] / MAP_SIZE_METERS)), int(round(pose[1] * maze_grid.shape[1] / MAP_SIZE_METERS)))
-    if is_exit(robot_grid, start_grid, maze_grid):
+
+    # 判断是否到达出口（robot_xy转为int索引）
+    robot_grid_idx = (int(round(robot_xy[0] * maze_grid.shape[0] / MAP_SIZE_METERS)),
+                      int(round(robot_xy[1] * maze_grid.shape[1] / MAP_SIZE_METERS)))
+    if is_exit(robot_grid_idx, start_grid, maze_grid):
         print(f"Goal (exit) reached at step {step}! Final position: ({pose[0]:.2f}, {pose[1]:.2f})")
         reached_goal = True
         break
     if step % 50 == 0:
-        print(f"Step {step}: Position=({pose[0]:.2f}, {pose[1]:.2f}), Waypoint={waypoint}")
-        
+        print(f"Step {step}: Position=({pose[0]:.2f}, {pose[1]:.2f})")
+
+
 
 if reached_goal:
     print("A* path planning to return to start...")
-    goal_grid = robot_grid
+    goal_grid = robot_xy
     planner = AStarPlanner(maze_grid)
     path = planner.planning(goal_grid, start_grid)
     if path is None:
