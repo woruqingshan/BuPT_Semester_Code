@@ -1,4 +1,3 @@
-
 import numpy as np
 import json
 from utils.gui import DualMapVisualizer
@@ -83,18 +82,22 @@ mapbytes = slam_sim.get_map()
 
 # 机器人初始状态 [x, y, theta, v, omega]
 pose = [float(start_point[0]), float(start_point[1]), 0.0, 0.0, 0.0]
+#pose = [3.0, 0.0, 0.0, 0.0, 0.0]
 config = Config()
 config.robot_radius = 0.8
+#设置 SLAM 起点（第一次 update()前）
+#slam_sim.force_initial_position(pose[0], pose[1], pose[2])
 
-# 强制设置SLAM内部位姿为起点
+# 设置 SLAM 内部真实初始位姿（必须在第一次 update 前）
 try:
-    pos = slam.position.copy()
-    pos.x_mm = pose[0]*1000
-    pos.y_mm = pose[1]*1000
-    pos.theta_degrees = 0
-    slam.position = pos
+    pos = slam_sim.slam.position.copy()
+    pos.x_mm = pose[0] * 1000
+    pos.y_mm = pose[1] * 1000
+    pos.theta_degrees = np.rad2deg(pose[2])  # 这里是角度
+    slam_sim.slam.position = pos
+    print(f"✅ 强制设置 SLAM 起点为: ({pose[0]}, {pose[1]})")
 except Exception as e:
-    print(f"SLAM起点设置失败: {e}")
+    print(f"❌ 设置 SLAM 起点失败: {e}")
 
 # Generate obstacle points (in meters) for DWA and visualization
 obstacle_points = []
@@ -133,10 +136,14 @@ for step in range(max_steps):
     u, _ = dwa_control(pose, config, exit_goal, obstacles)
     pose = motion(pose, u, config.dt)
     # Simulate laser scan based on maze obstacles and robot pose
+    
+    
     laser_scan = slam_sim.simulate_laser_scan([pose[0], pose[1], pose[2]])
     pose_change = (u[0] * config.dt * 1000, np.rad2deg(u[1] * config.dt), config.dt)
     slam_sim.update(laser_scan, pose_change)
     mapbytes = slam_sim.get_map()
+
+
     # Visualize robot, SLAM map, and laser scan
     laser_scan_m = [d/1000.0 for d in laser_scan]
     visualizer.display(x_m=pose[0], y_m=pose[1], theta_deg=np.rad2deg(pose[2]), mapbytes=mapbytes, laser_range=LASER_DETECTION_MAX_MM/1000, laser_scan=laser_scan_m)

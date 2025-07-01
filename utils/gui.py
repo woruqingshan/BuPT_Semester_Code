@@ -85,10 +85,13 @@ class DualMapVisualizer:
         # Right: show SLAM map as grayscale image
         if mapbytes is not None:
             mapimg = np.reshape(np.frombuffer(mapbytes, dtype=np.uint8), (self.map_size_pixels, self.map_size_pixels))
-            if self._slam_img_artist is None:
-                self._slam_img_artist = self.ax_right.imshow(mapimg, cmap='gray', origin='lower')
-            else:
-                self._slam_img_artist.set_data(mapimg)
+            self.ax_right.clear()
+            self._slam_img_artist = self.ax_right.imshow(mapimg, cmap='gray', origin='lower', vmin=0, vmax=255)
+            self.ax_right.set_title("SLAM Map")
+            self.ax_right.set_xlabel("X")
+            self.ax_right.set_ylabel("Y")
+            self.ax_right.set_aspect('equal')
+            self.ax_right.grid(False)
         # Draw robot as a triangle on right (pixel coordinates)
         if x_m is not None and y_m is not None and theta_deg is not None:
             if self._robot_right is not None:

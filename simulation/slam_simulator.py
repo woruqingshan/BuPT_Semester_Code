@@ -9,6 +9,8 @@ class SLAMSimulator:
         self.laser = Laser(360, 10, 360, 10000, 0, 0)
         self.slam = RMHC_SLAM(self.laser, self.MAP_SIZE_PIXELS, self.MAP_SIZE_METERS)
         self.occupancy_grid = None  # Binary maze grid (1=obstacle, 0=free)
+        self.mapbytes = bytearray(self.MAP_SIZE_PIXELS * self.MAP_SIZE_PIXELS)
+
 
     def set_occupancy_grid(self, grid):
         # Set the binary occupancy grid (maze)
@@ -59,11 +61,12 @@ class SLAMSimulator:
             pose_change = (0, 0, 0.1)
         self.slam.update(sensor_data, pose_change)
     def get_map(self):
-        mapbytes = bytearray(self.MAP_SIZE_PIXELS * self.MAP_SIZE_PIXELS)
-        self.slam.getmap(mapbytes)
-        return mapbytes
+        self.slam.getmap(self.mapbytes)
+        return self.mapbytes
     def get_position(self):
         x_mm, y_mm, theta_degrees = self.slam.getpos()
         x_m = x_mm / 1000.0
         y_m = y_mm / 1000.0
         return np.array([x_m, y_m, theta_degrees])
+    
+    
