@@ -4,6 +4,7 @@ from .dwa import dwa_control, Config
 
 class AStarDWAPlanner:
     def __init__(self, maze_grid, config=None, replan_interval=10):
+        # maze_grid应为膨胀后的grid，仅用于DWA/A*，其余逻辑外部保证
         self.maze_grid = maze_grid
         self.config = config if config is not None else Config()
         self.replan_interval = replan_interval
@@ -30,14 +31,16 @@ class AStarDWAPlanner:
         return self.path[lookahead]
 
     def grid_to_meter(self, grid, map_size_m, grid_shape):
+        # grid: (x, y)
         return [grid[0] * map_size_m / grid_shape[0], grid[1] * map_size_m / grid_shape[1]]
 
-    def step(self, pose, goal_grid, obstacles, map_size_m, grid_shape):
+    def step(self, pose, goal_grid, obstacles, map_size_m, grid_shape, local_obstacles=None):
         # pose: [x, y, theta, v, omega] (meters)
-        # goal_grid: (i, j)
-        # obstacles: np.array([[x, y], ...]) in meters
+        # goal_grid: (x, y) in膨胀后grid坐标
+        # obstacles: np.array([[x, y], ...]) in meters (全局障碍)
+        # local_obstacles: np.array([[x, y], ...]) in meters (局部障碍)
         # map_size_m: float
-        # grid_shape: (rows, cols)
+        # grid_shape: (cols, rows) of膨胀后grid
         robot_grid = (int(round(pose[0] * grid_shape[0] / map_size_m)), int(round(pose[1] * grid_shape[1] / map_size_m)))
         # 路径重规划条件：到达终点、路径为空、路径被阻断、定期重规划
         need_replan = False
@@ -60,6 +63,7 @@ class AStarDWAPlanner:
         if waypoint_grid is None:
             return [0.0, 0.0], None, None
         waypoint_m = self.grid_to_meter(waypoint_grid, map_size_m, grid_shape)
-        # DWA控制
-        u, trajectory = dwa_control(pose, self.config, waypoint_m, obstacles)
+        # DWA控制，优先用local_obstacles
+        use_obstacles = local_obstacles if local_obstacles is not None else obstacles
+        u, trajectory = dwa_control(pose, self.config, waypoint_m, use_obstacles)
         return u, trajectory, waypoint_m 

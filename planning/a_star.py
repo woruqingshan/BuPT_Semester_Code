@@ -43,7 +43,7 @@ class AStarPlanner:
         return None
 
     def verify_node(self, node):
-        
+        # node: (y, x)
         if node[0] < 0 or node[0] >= self.map.shape[0] or node[1] < 0 or node[1] >= self.map.shape[1]:
             return False
         if self.map[node[0], node[1]] == 1:

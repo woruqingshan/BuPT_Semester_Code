@@ -4,6 +4,7 @@ import numpy as np
 
 class DualMapVisualizer:
     def __init__(self, map_size_pixels=800, map_size_meters=20.0, title="Dual Map", show_trajectory=False):
+        # GUI只显示未膨胀的障碍和轨迹
         self.map_size_pixels = map_size_pixels
         self.map_size_meters = map_size_meters
         self.show_trajectory = show_trajectory
@@ -53,7 +54,8 @@ class DualMapVisualizer:
             print(f"❌ Failed to load JSON: {e}")
             return False 
 
-    def display(self, x_m=None, y_m=None, theta_deg=None, mapbytes=None, laser_range=None, laser_scan=None):
+    def display(self, x_m=None, y_m=None, theta_deg=None, mapbytes=None, laser_range=None, laser_scan=None, trajectory=None, loop_detected=False):
+        
         # Left: draw maze lines only
         if hasattr(self, '_maze_segments') and self._maze_segments:
             self.ax_left.clear()
@@ -79,9 +81,14 @@ class DualMapVisualizer:
             p2 = np.array([x_m + size * np.cos(theta + 2.5), y_m + size * np.sin(theta + 2.5)])
             p3 = np.array([x_m + size * np.cos(theta - 2.5), y_m + size * np.sin(theta - 2.5)])
             self._robot_left = self.ax_left.fill([p1[0], p2[0], p3[0]], [p1[1], p2[1], p3[1]], color='red', zorder=10)[0]
+        
+        
         # Draw laser rays/arcs on left
         if x_m is not None and y_m is not None and laser_scan is not None:
             self._draw_laser_rays(self.ax_left, x_m, y_m, theta_deg, laser_scan)
+        
+
+        
         # Right: show SLAM map as grayscale image
         if mapbytes is not None:
             mapimg = np.reshape(np.frombuffer(mapbytes, dtype=np.uint8), (self.map_size_pixels, self.map_size_pixels))
@@ -105,8 +112,35 @@ class DualMapVisualizer:
             p2r = np.array([px + size * np.cos(theta + 2.5), py + size * np.sin(theta + 2.5)])
             p3r = np.array([px + size * np.cos(theta - 2.5), py + size * np.sin(theta - 2.5)])
             self._robot_right = self.ax_right.fill([p1r[0], p2r[0], p3r[0]], [p1r[1], p2r[1], p3r[1]], color='red', zorder=10)[0]
+        # Draw trajectory
+        if trajectory is not None and len(trajectory) > 1:
+            xs, ys, _ = zip(*trajectory)
+            self.ax_left.plot(xs, ys, color='orange', linewidth=2, alpha=0.7, label='Trajectory')
+            scale = self.map_size_meters / self.map_size_pixels
+            pxs = [x / scale for x in xs]
+            pys = [y / scale for y in ys]
+            self.ax_right.plot(pxs, pys, color='orange', linewidth=2, alpha=0.7, label='Trajectory')
+
+
+            #注意此处A. 轨迹记录延迟或不同步 轨迹（trajectory）是通过SLAM仿真器的get_trajectory()获得的，通常是SLAM内部每次update后记录的。
+            #你的光标位置是pose，它是主循环中每次motion后立即更新的。
+            #如果pose的更新和SLAM轨迹的记录不是严格同步，就会出现“光标和轨迹终点不一致”的现象。
+
+            #已修改：将光标位置和轨迹终点同步，在test11中添加pose_history来表示轨迹
+
+        # 回环高亮点不显示
+        # if loop_detected and trajectory:
+        #     x, y, _ = trajectory[-1]
+        #     self.ax_left.plot(x, y, 'o', color='magenta', markersize=12, label='Loop Closure')
+        #     px, py = x / scale, y / scale
+        #     self.ax_right.plot(px, py, 'o', color='magenta', markersize=12, label='Loop Closure')
+            #print(f"光标(px, py): {px}, {py} | 轨迹终点(pxs[-1], pys[-1]): {pxs[-1]}, {pys[-1]}")
+        
         plt.draw()
         plt.pause(0.01)
+
+
+        #这里如何设置??
 
     def _draw_laser_rays(self, ax, x_m, y_m, theta_deg, laser_scan):
         # Draw laser rays from robot position, given scan data (in meters)

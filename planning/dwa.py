@@ -2,26 +2,101 @@ import math
 import numpy as np
 
 class Config:
-    def __init__(self):
-        self.max_speed = 1.0  # [m/s]
+    def __init__(self, robot_radius=0.1):
+        self.max_speed = 2.0  # [m/s]
         self.min_speed = -0.5  # [m/s]
         self.max_yaw_rate = 40.0 * math.pi / 180.0  # [rad/s]
         self.max_accel = 0.2  # [m/ss]
         self.max_delta_yaw_rate = 40.0 * math.pi / 180.0  # [rad/ss]
         self.v_resolution = 0.01  # [m/s]
         self.yaw_rate_resolution = 0.1 * math.pi / 180.0  # [rad/s]
-        self.dt = 0.1  # [s] Time tick for motion prediction
+        self.dt = 0.2  # [s] Time tick for motion prediction
         self.predict_time = 3.0  # [s]
         self.to_goal_cost_gain = 0.15
         self.speed_cost_gain = 1.0
         self.obstacle_cost_gain = 1.0
         self.robot_stuck_flag_cons = 0.001  # constant to prevent robot stucked
-        self.robot_radius = 1.0  # [m] for collision check
+        self.robot_radius = robot_radius  # [m] for collision check
+        self.soft_inflate_dist = 0.2  # [m] soft inflation distance
+        self.soft_inflate_penalty = 10.0  # penalty gain for soft inflation
 
 def dwa_control(x, config, goal, ob):
     dw = calc_dynamic_window(x, config)
     u, trajectory = calc_control_and_trajectory(x, dw, config, goal, ob)
     return u, trajectory
+
+def dwa_control_optimized(x, config, goal, ob, safety_margin=0.2, stuck_threshold=0.1):
+    """
+    优化的DWA控制，包含安全检查和卡住检测
+    """
+    # 安全检查：如果目标点太接近障碍物，调整目标
+    if len(ob) > 0:
+        goal_array = np.array(goal)
+        distances = np.linalg.norm(ob - goal_array, axis=1)
+        min_distance = np.min(distances)
+        
+        if min_distance < config.robot_radius + safety_margin:
+            # 目标点不安全，寻找更安全的目标
+            safe_goal = find_safe_goal(x, goal, ob, config, safety_margin)
+            if safe_goal is not None:
+                goal = safe_goal
+    
+    # 标准DWA控制
+    dw = calc_dynamic_window(x, config)
+    u, trajectory = calc_control_and_trajectory(x, dw, config, goal, ob)
+    
+    # 安全检查：确保控制输出不会导致碰撞
+    u = apply_safety_control(u, x, ob, config, safety_margin)
+    
+    return u, trajectory
+
+def find_safe_goal(robot_pose, original_goal, obstacles, config, safety_margin):
+    """
+    寻找安全的目标点
+    """
+    if len(obstacles) == 0:
+        return original_goal
+    
+    robot_pos = np.array([robot_pose[0], robot_pose[1]])
+    original_goal_array = np.array(original_goal)
+    
+    # 在机器人周围寻找安全点
+    for angle in np.linspace(0, 2*np.pi, 16):
+        for distance in [1.0, 2.0, 3.0]:
+            candidate = robot_pos + distance * np.array([np.cos(angle), np.sin(angle)])
+            
+            # 检查候选点是否安全
+            distances = np.linalg.norm(obstacles - candidate, axis=1)
+            if len(distances) > 0 and np.min(distances) > config.robot_radius + safety_margin:
+                # 选择最接近原目标的安全点
+                dist_to_original = np.linalg.norm(candidate - original_goal_array)
+                if dist_to_original < 5.0:  # 限制最大偏移
+                    return candidate.tolist()
+    
+    return None
+
+def apply_safety_control(u, robot_pose, obstacles, config, safety_margin):
+    """
+    应用安全控制，防止碰撞
+    """
+    if len(obstacles) == 0:
+        return u
+    
+    robot_pos = np.array([robot_pose[0], robot_pose[1]])
+    distances = np.linalg.norm(obstacles - robot_pos, axis=1)
+    min_distance = np.min(distances)
+    
+    # 如果太接近障碍物，降低速度
+    if min_distance < config.robot_radius + safety_margin:
+        u[0] *= 0.3  # 大幅降低线速度
+        u[1] *= 0.5  # 降低角速度
+    
+    # 如果非常接近障碍物，停止前进
+    if min_distance < config.robot_radius + 0.1:
+        u[0] = 0.0  # 停止前进
+        u[1] *= 0.2  # 大幅降低转向速度
+    
+    return u
 
 def motion(x, u, dt):
     x[2] += u[1] * dt
@@ -81,10 +156,22 @@ def calc_obstacle_cost(trajectory, ob, config):
     dx = trajectory[:, 0] - ox[:, None]
     dy = trajectory[:, 1] - oy[:, None]
     r = np.hypot(dx, dy)
+    
+    # 硬碰撞检测：如果轨迹点与障碍物距离小于机器人半径，直接返回无穷大
     if np.array(r <= config.robot_radius).any():
         return float("Inf")
+    
     min_r = np.min(r)
-    return 1.0 / min_r
+    
+    # 软膨胀机制：当距离小于soft_inflate_dist时，大幅增加惩罚
+    soft_penalty = 0.0
+    if min_r < config.soft_inflate_dist:
+        # 距离越近，惩罚越大
+        soft_penalty = config.soft_inflate_penalty * (config.soft_inflate_dist - min_r) / config.soft_inflate_dist
+    
+    # 基础障碍物成本 + 软膨胀惩罚
+    base_cost = 1.0 / min_r
+    return base_cost + soft_penalty
 
 def calc_to_goal_cost(trajectory, goal):
     dx = goal[0] - trajectory[-1, 0]

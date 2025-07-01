@@ -18,16 +18,7 @@ def generate_random_maze(width, height, num_segments):
     return segments
 
 def segments_to_obstacles(segments, scale_factor=1.0):
-    """
-    将线段转换为障碍物点数组
     
-    Args:
-        segments: 线段列表，每个元素为(x1, y1, x2, y2)
-        scale_factor: 坐标缩放因子，用于将像素坐标转换为米
-        
-    Returns:
-        numpy.ndarray: 形状为(N, 2)的障碍物坐标数组
-    """
     obstacles = []
     for x1, y1, x2, y2 in segments:
         if x1 == x2:  # 垂直线段
