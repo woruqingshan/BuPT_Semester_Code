@@ -74,6 +74,8 @@ def calc_control_and_trajectory(x, dw, config, goal, ob):
     return best_u, best_trajectory
 
 def calc_obstacle_cost(trajectory, ob, config):
+    if ob.shape[0] == 0:
+        return 0.0
     ox = ob[:, 0]
     oy = ob[:, 1]
     dx = trajectory[:, 0] - ox[:, None]
