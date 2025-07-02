@@ -13,6 +13,7 @@ class FrontierExplorationDWA:
         self.map_size_meters = map_size_meters
         self.map_size_pixels = map_size_pixels
         self.robot_radius = robot_radius
+        self.resolution = self.map_size_meters / self.map_size_pixels
         
         # DWA配置优化
         self.config = Config(robot_radius=robot_radius)
@@ -249,6 +250,7 @@ class FrontierExplorationDWA:
         获取探索目标点
         """
         # 更新探索状态
+
         self.update_exploration_status(slam_simulator, robot_pose)
         
         # 找到前沿点
@@ -306,16 +308,78 @@ class FrontierExplorationDWA:
         goal = self.return_path[self.return_path_index]
         return goal
     
-    def step(self, robot_pose, slam_simulator, obstacles, start_point=None, return_mode=False, step_count=0):
+    # def step(self, robot_pose, slam_simulator, start_point=None, return_mode=False, step_count=0):
+    #     """
+    #     执行一步探索或返回
+    #     """
+        
+    #     # 检查安全警告 - 传入step_count和start_point
+    #     self.check_safety_warnings(robot_pose, obstacles, start_point, step_count)
+        
+    #     # 检查是否卡住
+    #     is_stuck = self.check_stuck_condition(robot_pose)
+        
+    #     # 获取目标点
+    #     if return_mode:
+    #         if self.return_path is None:
+    #             self.plan_return_path(robot_pose, start_point)
+    #         goal = self.get_return_goal()
+    #     else:
+    #         goal = self.get_exploration_goal(slam_simulator, robot_pose)
+        
+    #     if goal is None:
+    #         return [0.0, 0.0], None, None, "no_goal"
+        
+    #     # 提取局部障碍物
+    #     local_obstacles = self.extract_local_obstacles(slam_simulator, robot_pose)
+        
+    #     # 如果有安全警告，调整目标点
+    #     if self.collision_warning or self.boundary_warning:
+    #         goal = self.adjust_goal_for_safety(robot_pose, goal, obstacles)
+        
+    #     # 如果卡住，尝试新的目标点
+    #     if is_stuck:
+    #         print("🔄 检测到卡住，重新选择目标点")
+    #         if return_mode:
+    #             self.return_path_index += 1
+    #             goal = self.get_return_goal()
+    #         else:
+    #             # 在探索模式下，选择不同的前沿点
+    #             frontiers = self.find_frontiers(robot_pose)
+    #             if frontiers:
+    #                 goal = self.select_best_frontier(frontiers, robot_pose)
+        
+    #     # DWA控制     
+    #     occupancy_grid = slam_simulator.occupancy_grid
+    #     u, trajectory = dwa_control(robot_pose, self.config, goal, occupancy_grid, self.resolution)
+    #     # u, trajectory = dwa_control(robot_pose, self.config, goal, local_obstacles)
+        
+    #     # 检查控制输出是否安全
+    #     if self.collision_warning or self.boundary_warning:
+    #         u = self.apply_safety_control(u, robot_pose, obstacles)
+        
+    #     status = "exploring" if not return_mode else "returning"
+    #     if is_stuck:
+    #         status += "_stuck"
+    #     if self.collision_warning:
+    #         status += "_collision_warning"
+    #     if self.boundary_warning:
+    #         status += "_boundary_warning"
+        
+    #     return u, trajectory, goal, status
+
+    def step(self, robot_pose, slam_simulator, start_point=None, return_mode=False, step_count=0):
         """
         执行一步探索或返回
         """
-        # 检查安全警告 - 传入step_count和start_point
-        self.check_safety_warnings(robot_pose, obstacles, start_point, step_count)
-        
+        occupancy_grid = slam_simulator.occupancy_grid
+
+        # 检查安全警告（使用 occupancy_grid）
+        self.check_safety_warnings(robot_pose, occupancy_grid, start_point, step_count)
+
         # 检查是否卡住
         is_stuck = self.check_stuck_condition(robot_pose)
-        
+
         # 获取目标点
         if return_mode:
             if self.return_path is None:
@@ -323,17 +387,21 @@ class FrontierExplorationDWA:
             goal = self.get_return_goal()
         else:
             goal = self.get_exploration_goal(slam_simulator, robot_pose)
-        
+
         if goal is None:
             return [0.0, 0.0], None, None, "no_goal"
-        
-        # 提取局部障碍物
-        local_obstacles = self.extract_local_obstacles(slam_simulator, robot_pose)
-        
-        # 如果有安全警告，调整目标点
+
+        # 如果有安全警告，尝试调整目标点（使用 occupancy grid）
         if self.collision_warning or self.boundary_warning:
-            goal = self.adjust_goal_for_safety(robot_pose, goal, obstacles)
-        
+            gx = int(goal[0] / self.resolution)
+            gy = int(goal[1] / self.resolution)
+            if 0 <= gy < occupancy_grid.shape[0] and 0 <= gx < occupancy_grid.shape[1]:
+                if occupancy_grid[gy, gx] >= 1:
+                    print("⚠️ 当前目标点处于障碍内，寻找替代前沿")
+                    frontiers = self.find_frontiers(robot_pose)
+                    if frontiers:
+                        goal = self.select_best_frontier(frontiers, robot_pose)
+
         # 如果卡住，尝试新的目标点
         if is_stuck:
             print("🔄 检测到卡住，重新选择目标点")
@@ -341,18 +409,30 @@ class FrontierExplorationDWA:
                 self.return_path_index += 1
                 goal = self.get_return_goal()
             else:
-                # 在探索模式下，选择不同的前沿点
                 frontiers = self.find_frontiers(robot_pose)
                 if frontiers:
                     goal = self.select_best_frontier(frontiers, robot_pose)
-        
-        # DWA控制
-        u, trajectory = dwa_control(robot_pose, self.config, goal, local_obstacles)
-        
-        # 检查控制输出是否安全
+
+        # DWA控制：调用带 occupancy_grid 的路径规划器
+        u, trajectory = dwa_control(robot_pose, self.config, goal, occupancy_grid, self.resolution)
+
+        # 安全输出限制：检查周围是否仍有障碍，使用 occupancy_grid 附近格子判定
         if self.collision_warning or self.boundary_warning:
-            u = self.apply_safety_control(u, robot_pose, obstacles)
-        
+            gx = int(robot_pose[0] / self.resolution)
+            gy = int(robot_pose[1] / self.resolution)
+            margin = int(self.safety_margin / self.resolution)
+
+            for dy in range(-margin, margin + 1):
+                for dx in range(-margin, margin + 1):
+                    ny = gy + dy
+                    nx = gx + dx
+                    if 0 <= ny < occupancy_grid.shape[0] and 0 <= nx < occupancy_grid.shape[1]:
+                        if occupancy_grid[ny, nx] >= 1:
+                            print("🛑 附近有障碍，强制停止")
+                            u = [0.0, 0.0]
+                            break
+
+        # 状态标签
         status = "exploring" if not return_mode else "returning"
         if is_stuck:
             status += "_stuck"
@@ -360,9 +440,9 @@ class FrontierExplorationDWA:
             status += "_collision_warning"
         if self.boundary_warning:
             status += "_boundary_warning"
-        
+
         return u, trajectory, goal, status
-    
+        
     def extract_local_obstacles(self, slam_simulator, robot_pose, radius=3.0):
         """
         从SLAM地图中提取局部障碍物
@@ -388,67 +468,101 @@ class FrontierExplorationDWA:
         
         return np.array(local_obs)
     
-    def adjust_goal_for_safety(self, robot_pose, goal, obstacles):
-        """
-        为安全考虑调整目标点
-        """
-        if len(obstacles) == 0:
-            return goal
+    # def adjust_goal_for_safety(self, robot_pose, goal, obstacles):
+    #     """
+    #     为安全考虑调整目标点
+    #     """
+    #     if len(obstacles) == 0:
+    #         return goal
         
-        robot_pos = np.array([robot_pose[0], robot_pose[1]])
-        goal_pos = np.array(goal)
+    #     robot_pos = np.array([robot_pose[0], robot_pose[1]])
+    #     goal_pos = np.array(goal)
         
-        # 检查目标点是否安全
-        distances = np.linalg.norm(obstacles - goal_pos, axis=1)
-        min_distance = np.min(distances)
+    #     # 检查目标点是否安全
+    #     distances = np.linalg.norm(obstacles - goal_pos, axis=1)
+    #     min_distance = np.min(distances)
         
-        if min_distance < self.robot_radius + self.safety_margin:
-            # 目标点不安全，寻找更安全的目标
-            safe_goals = []
-            for angle in np.linspace(0, 2*np.pi, 8):
-                for dist in [1.0, 2.0, 3.0]:
-                    new_goal = robot_pos + dist * np.array([np.cos(angle), np.sin(angle)])
+    #     if min_distance < self.robot_radius + self.safety_margin:
+    #         # 目标点不安全，寻找更安全的目标
+    #         safe_goals = []
+    #         for angle in np.linspace(0, 2*np.pi, 8):
+    #             for dist in [1.0, 2.0, 3.0]:
+    #                 new_goal = robot_pos + dist * np.array([np.cos(angle), np.sin(angle)])
                     
-                    # 检查新目标是否在地图范围内
-                    if (0 <= new_goal[0] <= self.map_size_meters and 
-                        0 <= new_goal[1] <= self.map_size_meters):
+    #                 # 检查新目标是否在地图范围内
+    #                 if (0 <= new_goal[0] <= self.map_size_meters and 
+    #                     0 <= new_goal[1] <= self.map_size_meters):
                         
-                        # 检查新目标是否安全
-                        distances = np.linalg.norm(obstacles - new_goal, axis=1)
-                        if len(distances) > 0 and np.min(distances) > self.robot_radius + self.safety_margin:
-                            safe_goals.append(new_goal)
+    #                     # 检查新目标是否安全
+    #                     distances = np.linalg.norm(obstacles - new_goal, axis=1)
+    #                     if len(distances) > 0 and np.min(distances) > self.robot_radius + self.safety_margin:
+    #                         safe_goals.append(new_goal)
             
-            if safe_goals:
-                # 选择最接近原目标的安全目标
-                safe_goals = np.array(safe_goals)
-                distances_to_original = np.linalg.norm(safe_goals - goal_pos, axis=1)
-                best_idx = np.argmin(distances_to_original)
-                return safe_goals[best_idx].tolist()
+    #         if safe_goals:
+    #             # 选择最接近原目标的安全目标
+    #             safe_goals = np.array(safe_goals)
+    #             distances_to_original = np.linalg.norm(safe_goals - goal_pos, axis=1)
+    #             best_idx = np.argmin(distances_to_original)
+    #             return safe_goals[best_idx].tolist()
         
-        return goal
+    #     return goal
     
-    def apply_safety_control(self, u, robot_pose, obstacles):
-        """
-        应用安全控制，防止碰撞 - 更温和的控制策略
-        """
-        # 只减速，不直接停止，保证有最小速度
-        u[0] = max(u[0] * 0.7, 0.05)  # 保证至少有0.05m/s的速度，减速程度更温和
+    # def apply_safety_control(self, u, robot_pose, obstacles):
+    #     """
+    #     应用安全控制，防止碰撞 - 更温和的控制策略
+    #     """
+    #     # 只减速，不直接停止，保证有最小速度
+    #     u[0] = max(u[0] * 0.7, 0.05)  # 保证至少有0.05m/s的速度，减速程度更温和
         
-        # 如果接近障碍物，进一步减速但不停
-        if len(obstacles) > 0:
-            robot_pos = np.array([robot_pose[0], robot_pose[1]])
-            distances = np.linalg.norm(obstacles - robot_pos, axis=1)
-            min_distance = np.min(distances)
+    #     # 如果接近障碍物，进一步减速但不停
+    #     if len(obstacles) > 0:
+    #         robot_pos = np.array([robot_pose[0], robot_pose[1]])
+    #         distances = np.linalg.norm(obstacles - robot_pos, axis=1)
+    #         min_distance = np.min(distances)
             
-            if min_distance < self.robot_radius + 0.03:  # 只有极近（3cm）才停止
-                u[0] = 0.0  # 停止前进
-                u[1] *= 0.5  # 降低转向速度
-            elif min_distance < self.robot_radius + 0.1:  # 10cm内进一步减速
-                u[0] = max(u[0] * 0.5, 0.02)  # 进一步减速但保持最小速度
-            elif min_distance < self.robot_radius + 0.2:  # 20cm内轻微减速
-                u[0] = max(u[0] * 0.8, 0.03)  # 轻微减速
+    #         if min_distance < self.robot_radius + 0.03:  # 只有极近（3cm）才停止
+    #             u[0] = 0.0  # 停止前进
+    #             u[1] *= 0.5  # 降低转向速度
+    #         elif min_distance < self.robot_radius + 0.1:  # 10cm内进一步减速
+    #             u[0] = max(u[0] * 0.5, 0.02)  # 进一步减速但保持最小速度
+    #         elif min_distance < self.robot_radius + 0.2:  # 20cm内轻微减速
+    #             u[0] = max(u[0] * 0.8, 0.03)  # 轻微减速
         
-        return u
+    #     return u
+
+    def adjust_goal_for_safety(self, robot_pose, goal, occupancy_grid):
+        """
+        为安全考虑调整目标点（基于 occupancy grid）
+        """
+        gx = int(goal[0] / self.resolution)
+        gy = int(goal[1] / self.resolution)
+
+        # 地图边界判断
+        if gx < 0 or gx >= occupancy_grid.shape[1] or gy < 0 or gy >= occupancy_grid.shape[0]:
+            return goal
+
+        # 如果目标点在障碍上，则寻找替代目标
+        if occupancy_grid[gy, gx] >= 1:
+            print("⚠️ 目标点处于障碍内，尝试寻找可行目标点")
+            robot_pos = np.array([robot_pose[0], robot_pose[1]])
+            safe_goals = []
+
+            for angle in np.linspace(0, 2*np.pi, 12):  # 更多角度更灵活
+                for dist in [0.5, 1.0, 1.5, 2.0]:
+                    new_goal = robot_pos + dist * np.array([np.cos(angle), np.sin(angle)])
+                    nx = int(new_goal[0] / self.resolution)
+                    ny = int(new_goal[1] / self.resolution)
+
+                    if 0 <= nx < occupancy_grid.shape[1] and 0 <= ny < occupancy_grid.shape[0]:
+                        if occupancy_grid[ny, nx] == 0:
+                            safe_goals.append(new_goal)
+
+            if safe_goals:
+                goal_pos = np.array(goal)
+                dists = np.linalg.norm(np.array(safe_goals) - goal_pos, axis=1)
+                return safe_goals[np.argmin(dists)].tolist()
+
+        return goal
     
     def check_goal_reached(self, robot_pose, goal, threshold=0.5):
         """

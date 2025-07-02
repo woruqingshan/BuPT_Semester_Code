@@ -23,7 +23,7 @@ Frontier Exploration + 优化DWA 路径规划系统
 # 仿真参数
 MAP_SIZE_PIXELS = 800
 MAP_SIZE_METERS = 25.0
-LASER_SCAN_SIZE = 360
+LASER_SCAN_SIZE = 720
 LASER_SCAN_RATE_HZ = 10
 LASER_DETECTION_ANGLE_DEGREES = 360
 LASER_DETECTION_MAX_MM = 10000
@@ -49,6 +49,7 @@ start_point = data.get('start_point', [0, 0])
 print(f"起点: {start_point}")
 pose[0] = float(start_point[0])
 pose[1] = float(start_point[1])
+
 
 # =================== 生成未膨胀maze_grid ===================
 segments = data.get('segments', data.get('line_segments', []))
@@ -145,17 +146,28 @@ slam_sim = SLAMSimulator(MAP_SIZE_PIXELS, MAP_SIZE_METERS)
 slam_sim.set_occupancy_grid(raw_maze_grid)
 mapbytes = slam_sim.get_map()
 
-# =================== 强制设置SLAM起点 ===================
-try:
-    pos = slam_sim.slam.position.copy()
-    pos.x_mm = pose[0] * 1000
-    pos.y_mm = pose[1] * 1000
-    pos.theta_degrees = np.rad2deg(pose[2])
-    slam_sim.slam.position = pos
-    print(f"✅ 强制设置 SLAM 起点为: ({pose[0]}, {pose[1]})")
-except Exception as e:
-    print(f"❌ 设置 SLAM 起点失败: {e}")
+# # =================== 强制设置SLAM起点 ===================
+# try:
+#     pos = slam_sim.slam.position.copy()
+#     pos.x_mm = pose[0] * 1000
+#     pos.y_mm = pose[1] * 1000
+#     pos.theta_degrees = np.rad2deg(pose[2])
+#     slam_sim.slam.position = pos
+#     print(f"✅ 强制设置 SLAM 起点为: ({pose[0]}, {pose[1]})")
+# except Exception as e:
+#     print(f"❌ 设置 SLAM 起点失败: {e}")
 
+# 1. 先用激光数据同步起点（真正初始化SLAM）
+laser_data = slam_sim.simulate_laser_scan([pose[0], pose[1], pose[2]])
+slam_sim.update(laser_data, pose_change=(0, 0, 0))
+
+# 2. 再修改position属性（仅用于显示目的）
+pos = slam_sim.slam.position.copy()
+pos.x_mm = pose[0] * 1000
+pos.y_mm = pose[1] * 1000
+pos.theta_degrees = np.rad2deg(pose[2])
+slam_sim.slam.position = pos
+    
 # =================== 初始化Frontier Exploration + DWA系统 ===================
 frontier_explorer = FrontierExplorationDWA(
     map_size_meters=MAP_SIZE_METERS,
@@ -182,8 +194,11 @@ def is_exit(robot_grid, start_grid, maze_grid):
     rows, cols = maze_grid.shape
     is_on_boundary = (robot_grid[0] == 0 or robot_grid[0] == rows-1 or 
                      robot_grid[1] == 0 or robot_grid[1] == cols-1)
+    #if(is_on_boundary == 1) #print("robot is on the boundary")
     not_start = (robot_grid != start_grid)
+    #if( not_start == 1) #print("robot is on the start point")
     is_free = (maze_grid[robot_grid] == 0)
+    #if(is_free == 1) print("robot is free")
     return is_on_boundary and is_free and not_start
 
 def motion(x, u, dt):
@@ -201,7 +216,7 @@ print("=" * 60)
 for step in range(max_steps):
     # 获取当前目标点
     if exploration_phase:
-        # 探索阶段：使用Frontier Exploration
+        # 探索阶段：使用Frontier Exploration，根据当前的位姿状态从能见的边界点中找出一个边界点作为最佳的
         current_goal = frontier_explorer.get_exploration_goal(slam_sim, pose)
         
         # 检查是否到达出口
@@ -238,7 +253,6 @@ for step in range(max_steps):
     u, trajectory, goal, status = frontier_explorer.step(
         robot_pose=pose,
         slam_simulator=slam_sim,
-        obstacles=obstacles,
         start_point=start_point,
         return_mode=not exploration_phase
     )

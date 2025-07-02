@@ -1,6 +1,16 @@
 import math
 import numpy as np
 
+def world_to_grid(x, y, grid_h, grid_w, map_size_m):
+    i = int(y * grid_h / map_size_m)  # 行 = y方向
+    j = int(x * grid_w / map_size_m)  # 列 = x方向
+    return i, j
+
+def grid_to_world(i, j, grid_h, grid_w, map_size_m):
+    x = j * map_size_m / grid_w
+    y = i * map_size_m / grid_h
+    return x, y
+
 class Config:
     def __init__(self, robot_radius=0.1):
         self.max_speed = 2.0  # [m/s]
@@ -10,8 +20,8 @@ class Config:
         self.max_delta_yaw_rate = 40.0 * math.pi / 180.0  # [rad/ss]
         self.v_resolution = 0.01  # [m/s]
         self.yaw_rate_resolution = 0.1 * math.pi / 180.0  # [rad/s]
-        self.dt = 0.2  # [s] Time tick for motion prediction
-        self.predict_time = 3.0  # [s]
+        self.dt = 0.07  # [s] Time tick for motion prediction
+        self.predict_time = 1.0  # [s]
         self.to_goal_cost_gain = 0.15
         self.speed_cost_gain = 1.0
         self.obstacle_cost_gain = 1.0
@@ -20,9 +30,14 @@ class Config:
         self.soft_inflate_dist = 0.2  # [m] soft inflation distance
         self.soft_inflate_penalty = 10.0  # penalty gain for soft inflation
 
-def dwa_control(x, config, goal, ob):
+"""def dwa_control(x, config, goal, ob):
     dw = calc_dynamic_window(x, config)
     u, trajectory = calc_control_and_trajectory(x, dw, config, goal, ob)
+    return u, trajectory"""
+
+def dwa_control(x, config, goal, occupancy_grid, resolution):
+    dw = calc_dynamic_window(x, config)
+    u, trajectory = calc_control_and_trajectory(x, dw, config, goal, occupancy_grid, resolution)
     return u, trajectory
 
 def dwa_control_optimized(x, config, goal, ob, safety_margin=0.2, stuck_threshold=0.1):
@@ -127,7 +142,7 @@ def predict_trajectory(x_init, v, y, config):
         time += config.dt
     return trajectory
 
-def calc_control_and_trajectory(x, dw, config, goal, ob):
+"""def calc_control_and_trajectory(x, dw, config, goal, ob):
     x_init = x[:]
     min_cost = float("inf")
     best_u = [0.0, 0.0]
@@ -147,7 +162,34 @@ def calc_control_and_trajectory(x, dw, config, goal, ob):
                         and abs(x[3]) < config.robot_stuck_flag_cons:
                     best_u[1] = -config.max_delta_yaw_rate
     return best_u, best_trajectory
+"""
 
+def calc_control_and_trajectory(x, dw, config, goal, occupancy_grid, resolution):
+    x_init = x[:]
+    min_cost = float("inf")
+    best_u = [0.0, 0.0]
+    best_trajectory = np.array([x])
+    
+    for v in np.arange(dw[0], dw[1], config.v_resolution):
+        for y in np.arange(dw[2], dw[3], config.yaw_rate_resolution):
+            trajectory = predict_trajectory(x_init, v, y, config)
+            to_goal_cost = config.to_goal_cost_gain * calc_to_goal_cost(trajectory, goal)
+            speed_cost = config.speed_cost_gain * (config.max_speed - trajectory[-1, 3])
+            ob_cost = config.obstacle_cost_gain * calc_obstacle_cost(trajectory, occupancy_grid, resolution, config)
+
+            final_cost = to_goal_cost + speed_cost + ob_cost
+            if min_cost >= final_cost:
+                min_cost = final_cost
+                best_u = [v, y]
+                best_trajectory = trajectory
+                if abs(best_u[0]) < config.robot_stuck_flag_cons and abs(x[3]) < config.robot_stuck_flag_cons:
+                    best_u[1] = -config.max_delta_yaw_rate
+
+    return best_u, best_trajectory
+
+
+
+"""
 def calc_obstacle_cost(trajectory, ob, config):
     if ob.shape[0] == 0:
         return 0.0
@@ -172,6 +214,23 @@ def calc_obstacle_cost(trajectory, ob, config):
     # 基础障碍物成本 + 软膨胀惩罚
     base_cost = 1.0 / min_r
     return base_cost + soft_penalty
+"""
+
+def calc_obstacle_cost(trajectory, occupancy_grid, resolution, config):
+    height, width = occupancy_grid.shape
+    for x, y in trajectory[:, :2]:
+        # grid_x = int(x / resolution)
+        # grid_y = int(y / resolution)
+        grid_y, grid_x = world_to_grid(x, y, height, width, resolution * height)
+
+        if grid_x < 0 or grid_x >= width or grid_y < 0 or grid_y >= height:
+            return float("inf")  # 越界，视为碰撞
+
+        if occupancy_grid[grid_y, grid_x] >= 1:  # 1表示有障碍
+            return float("inf")  # 撞墙
+
+    return 0.0  # 无碰撞
+
 
 def calc_to_goal_cost(trajectory, goal):
     dx = goal[0] - trajectory[-1, 0]

@@ -16,8 +16,10 @@ class SLAMSimulator:
         self.last_loop_detected = False
 
     def set_occupancy_grid(self, grid):
+        
         # grid应为未膨胀的maze_grid
         self.occupancy_grid = grid
+
 
     def simulate_laser_scan(self, pose=None):
         # Simulate a laser scan based on the occupancy grid and robot pose
@@ -37,7 +39,7 @@ class SLAMSimulator:
         grid_h, grid_w = self.occupancy_grid.shape
         scale_x = self.MAP_SIZE_METERS / grid_w  # x方向
         scale_y = self.MAP_SIZE_METERS / grid_h  # y方向
-        for a in angles:
+        for a in angles:    
             found = False
             for r in np.linspace(0, max_range, int(max_range/0.02)):
                 x = x0 + r * np.cos(a + theta0)
